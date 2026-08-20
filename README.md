@@ -39,7 +39,7 @@ By migrating the control plane to this centralized SDN framework, administrators
 ### Installation & Deployment
 
 1. Clone the repository to your local machine:
-`git clone [https://github.com/Mohsin-Rasul/ccn-project.git](https://github.com/Mohsin-Rasul/ccn-project.git)`
+`git clone https://github.com/Mohsin-Rasul/ccn-project.git`
 2. Initialize the multi-controller framework and bind it to your OpenFlow infrastructure.
 3. Define your campus BYOD routing and security policies within the centralized configuration directory.
 4. Start the network emulator (or connect to physical switches) to see the framework automatically authenticate, manage, and route heterogeneous device traffic based on your predefined rules.
