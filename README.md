@@ -1,47 +1,103 @@
+# SDN Campus Network
 
-# SDN Campus Network Framework 
+A three-tier campus network emulated in Mininet, segmented with 802.1Q VLANs and protected by a Ryu OpenFlow controller that blocks traffic between departments that shouldn't talk.
 
-## Overview
+**Write-up:** [Segmenting a campus network with SDN](https://cyconic.com/projects/sdn-campus-network/) explains the design, how it was verified, and its limitations.
 
-This project implements a Software Defined Networking (SDN) framework designed specifically to streamline the management of complex campus networks. In traditional settings, the rapid influx of heterogeneous devices and the widespread adoption of Bring Your Own Device (BYOD) policies make manual network configuration by IT administrators tedious, inefficient, and highly complex.
+## What it builds
 
-This framework solves that friction by migrating to an SDN paradigm, providing a programmable network platform that incorporates centralized, network-wide rules rather than relying on manual switch-by-switch configuration.
+```
+                 r0   router, one link per VLAN
+                 │
+                 s1   core   ← ACLs live here
+            ┌────┴────┐
+            s2        s3     distribution
+          ┌─┴─┐     ┌─┴─┐
+          s4  s5    s6  s7   access
+          │   │     │   │
+          h1  h2    h3  h4
+          ECE CS    Admin Labs
+```
 
-## Core Features
+| VLAN | Department     | Subnet          | Addressing                                  |
+|------|----------------|-----------------|---------------------------------------------|
+| 10   | ECE            | 192.168.10.0/24 | DHCP `.100–.200`; router also serves DNS    |
+| 20   | CS             | 192.168.20.0/24 | DHCP `.100–.200`                            |
+| 30   | Administration | 192.168.30.0/24 | Static server at `192.168.30.10`            |
+| 40   | Student labs   | 192.168.40.0/24 | DHCP `.100–.200`                            |
 
-* **Multi-Controller Architecture:** Employs multiple programmable controllers to reliably handle the heterogeneous nature and high traffic loads of modern, multi-layered campus environments.
+- **VLANs:** Open vSwitch access ports for hosts, trunks carrying all four VLANs between switches.
+- **Inter-VLAN routing:** a Linux router (`r0`) with four links into the core switch, one access port per VLAN, each holding that VLAN's `.1` gateway.
+- **DHCP and DNS:** one `dnsmasq` instance per VLAN interface on `r0`, plus an internal `cust.local` zone (for example `admin.cust.local`). The script flags any host that leases an address from the wrong VLAN's pool.
+- **Routing:** FRRouting (`zebra` + `ospfd`) on `r0`, all subnets in OSPF area 0.
+- **Controller (`src/customRyu.py`):** installs a priority-0 rule that hands traffic to OVS's normal switching (`OFPP_NORMAL`), then priority-40000 drop rules on the core switch:
+  - Student labs (VLAN 40) → Administration (VLAN 30): **drop**
+  - ECE (VLAN 10) → CS (VLAN 20): **drop**
+- **Fail closed:** switches run in `fail-mode secure`, so they forward nothing if the controller is down.
 
+## Requirements
 
-* **Automated BYOD Policy Enforcement:** Allocates different network functions across various infrastructures automatically based on predefined IT policies, abstracting away the difficulty of individual device management.
+Tested on Ubuntu with:
 
+- [Mininet](http://mininet.org/) and Open vSwitch
+- [Ryu](https://ryu-sdn.org/) (run here from the `osrg/ryu` Docker image)
+- FRRouting (`/usr/lib/frr/zebra`, `/usr/lib/frr/ospfd`)
+- `dnsmasq`, `isc-dhcp-client` (`dhclient`), `ethtool`
+- Python 3
 
-* **Centralized Network Visibility:** Leverages the core concepts of SDN to provide global network visibility and central administration over a dispersed, heterogeneous network infrastructure.
+## Running it
 
+1. Start the controller (from the repo root):
 
-* **Enhanced Performance & Security:** Designed to yield flexible campus network management, highly efficient data transmission, and robust network security while guaranteeing long-term network evolution.
+   ```bash
+   sudo docker run --rm --network host -v "$PWD/src:/apps" osrg/ryu \
+     ryu-manager /apps/customRyu.py
+   ```
 
+2. In another terminal, build the network:
 
+   ```bash
+   sudo python3 src/campusNetwork.py
+   ```
 
-## The Problem it Solves
+   It brings up the topology, tags the VLANs, starts FRR and DHCP/DNS, leases addresses to `h1`, `h2` and `h4`, then drops you into the Mininet CLI.
 
-In standard campus architectures, critical management decisions are distributed across interconnected hardware, requiring network administrators to individually configure switches and routers. Owing to the complexity of campus network policies, using traditional approaches to implement network-wide rules is incredibly difficult and highly prone to management error.
+## Verifying the policy
 
-By migrating the control plane to this centralized SDN framework, administrators can seamlessly manage users, dynamically route services, and secure the network without touching a single physical device interface.
+```text
+mininet> h4 ping -c 3 192.168.30.10          # labs → admin: 100% packet loss
+mininet> sh ovs-ofctl -O OpenFlow13 dump-flows s1
+```
 
-## Quick Start Guide
+The labs → admin drop rule's `n_packets` counter goes up by exactly the number of blocked pings, which confirms the ACL, not something else, dropped them. Allowed paths work normally:
 
-### Prerequisites
+```text
+mininet> h3 python3 -m http.server 80 &
+mininet> h1 curl http://192.168.30.10        # ECE → admin: allowed
+mininet> h2 nslookup admin.cust.local        # internal DNS
+```
 
-* An OpenFlow-compatible SDN Controller environment (e.g., Ryu, POX, or Floodlight).
-* Mininet (for testing and campus topology emulation).
-* Python 3.x
+## Repository contents
 
-### Installation & Deployment
+| Path | What it is |
+|------|------------|
+| `src/campusNetwork.py` | Mininet topology, VLAN tagging, FRR, DHCP/DNS, lease checks |
+| `src/customRyu.py` | Ryu controller app: NORMAL pipeline + ACL drop rules |
+| `captures/dhcpDora.pcapng` | DHCP Discover/Offer/Request/ACK in VLAN 10 |
+| `captures/campus_traffic.pcap` | Traffic from an earlier, unsegmented version (note the ICMP redirects) |
+| `captures/student_traffic.pcap` | Background traffic capture |
+| `docs/CCN Project Report.pdf` | Full project report with screenshots and protocol analysis |
 
-1. Clone the repository to your local machine:
-`git clone https://github.com/Mohsin-Rasul/ccn-project.git`
-2. Initialize the multi-controller framework and bind it to your OpenFlow infrastructure.
-3. Define your campus BYOD routing and security policies within the centralized configuration directory.
-4. Start the network emulator (or connect to physical switches) to see the framework automatically authenticate, manage, and route heterogeneous device traffic based on your predefined rules.
+## Known limitations
 
----
+- ACLs match on source IP, which hosts control. Matching on VLAN tag or ingress port would be stronger.
+- Rules are stateless, so they block replies too: admin can't use services in the labs either.
+- IPv4 only (`eth_type=0x0800`).
+- OSPF runs on a single router, so it has no neighbours to exchange routes with.
+- Policy is hard-coded in `customRyu.py`.
+
+See the [write-up](https://cyconic.com/projects/sdn-campus-network/) for details.
+
+## License
+
+[MIT](LICENSE)
